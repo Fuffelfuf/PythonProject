@@ -1,0 +1,189 @@
+from PyQt5.QtWidgets import QApplication, QMainWindow, QFileDialog
+from PyQt5.QtCore import QUrl, QTime, QTimer
+from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
+from mus_player import Ui_musPlayer
+import pickle
+
+class PlayerWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+
+        self.ui = Ui_musPlayer()
+        self.ui.setupUi(self)
+
+        self.media_player = QMediaPlayer()
+        self.media_player.stateChanged.connect(self.media_state_changed)
+        self.media_player.positionChanged.connect(self.position_changed)
+        self.media_player.durationChanged.connect(self.duration_changed)
+        self.media_player.mediaStatusChanged.connect(self.media_status_changed)
+
+        self.ui.playPauseButton.clicked.connect(self.toggle_play_pause)
+        self.ui.stopButton.clicked.connect(self.stop_music)
+        self.ui.volumeSlider.valueChanged.connect(self.change_volume)
+        self.ui.addButton.clicked.connect(self.add_music)
+        self.ui.removeButton.clicked.connect(self.remove_music)
+        self.ui.nextButton.clicked.connect(self.next_song)
+        self.ui.prevButton.clicked.connect(self.prev_song)
+        self.ui.songSlider.sliderPressed.connect(self.slider_pressed)
+        self.ui.songSlider.sliderReleased.connect(self.slider_released)
+        self.ui.songSlider.sliderMoved.connect(self.slider_moved)
+
+        self.ui.repeatBox.clicked.connect(self.toggle_repeat)
+
+        self.music_list = []
+        self.current_song_index = 0
+
+        self.volume = 50
+        self.ui.volumeSlider.setValue(self.volume)
+        self.media_player.setVolume(self.volume)
+
+        self.playing = False
+        self.repeat = False
+        self.repeat_current_song = False
+        self.next_song_called = False
+
+        self.ui.musiclist.itemClicked.connect(self.item_clicked)
+
+        self.load_music_list()
+        self.update_music_list_widget()
+
+    def toggle_play_pause(self):
+        if self.media_player.state() == QMediaPlayer.PlayingState:
+            self.media_player.pause()
+        else:
+            self.media_player.play()
+
+    def stop_music(self):
+        self.media_player.stop()
+
+    def change_volume(self, value):
+        self.volume = value
+        self.media_player.setVolume(self.volume)
+
+    def add_music(self):
+        options = QFileDialog.Options()
+        options |= QFileDialog.DontUseNativeDialog
+        file_path, _ = QFileDialog.getOpenFileName(self, "Choose file", "", "Audio Files (*.mp3);;All Files (*)",
+                                                   options=options)
+        if file_path and file_path not in self.music_list:
+            self.music_list.append(file_path)
+            self.save_music_list()
+            self.update_music_list_widget()
+
+    def remove_music(self):
+        if self.current_song_index < len(self.music_list):
+            self.music_list.pop(self.current_song_index)
+            self.save_music_list()
+            self.update_music_list_widget()
+            self.ui.musicname.clear()
+            self.media_player.stop()
+
+    def update_music_list_widget(self):
+        self.ui.musiclist.clear()
+        for file_path in self.music_list:
+            self.ui.musiclist.addItem(QUrl.fromLocalFile(file_path).fileName())
+
+    def item_clicked(self, item):
+        self.current_song_index = self.ui.musiclist.row(item)
+        self.play_selected_song()
+
+    def play_selected_song(self):
+        print(f"current:{self.current_song_index}")
+        if self.current_song_index < len(self.music_list):
+            music_content = QMediaContent(QUrl.fromLocalFile(self.music_list[self.current_song_index]))
+            self.media_player.setMedia(music_content)
+            self.media_player.play()
+            self.update_musicname()
+            self.repeat_current_song = False  # Сброс флага повтора текущей песни
+
+    def next_song(self):
+        if not self.next_song_called:
+            self.next_song_called = True
+            QTimer.singleShot(0, self._next_song)
+
+    def _next_song(self):
+        if self.repeat or self.current_song_index < len(self.music_list) - 1:
+            if self.repeat_current_song:
+                # Если установлен флаг повтора текущей песни, просто обновите имя песни
+                self.play_selected_song()
+            else:
+                # Иначе, переходите к следующей песне
+                self.current_song_index = (self.current_song_index + 1) % len(self.music_list)
+                print(f"next:{self.current_song_index}")
+                self.play_selected_song()
+        else:
+            # Если это последняя песня и повтор выключен, останавливаем воспроизведение
+            self.stop_music()
+        self.next_song_called = False
+
+    def prev_song(self):
+        if self.current_song_index > 0:
+            self.current_song_index = (self.current_song_index - 1) % len(self.music_list)
+            self.play_selected_song()
+
+    def media_state_changed(self, state):
+        if state == QMediaPlayer.PlayingState:
+            self.playing = True
+        elif state == QMediaPlayer.PausedState:
+            self.playing = False
+        elif state == QMediaPlayer.StoppedState:
+            self.playing = False
+            self.ui.songSlider.setValue(0)
+
+    def position_changed(self, position):
+        if not self.ui.songSlider.isSliderDown():
+            self.ui.songSlider.setValue(position)
+
+        current_time = QTime(0, position // 60000, (position // 1000) % 60)
+        self.ui.timerLabel.setText(current_time.toString("mm:ss"))
+
+        # Если значение таймера равно продолжительности песни (с учетом небольшой задержки), переключаемся на следующую песню
+        if position >= self.media_player.duration() - 1000 and self.playing:
+            self.media_player.stop()
+            self.next_song()
+
+    def duration_changed(self, duration):
+        self.ui.songSlider.setMaximum(duration)
+
+    def slider_pressed(self):
+        if self.playing:
+            self.playing_before_slider_move = True
+            self.media_player.pause()
+
+    def slider_moved(self):
+        if self.playing_before_slider_move:
+            new_position = self.ui.songSlider.value()
+            self.media_player.setPosition(new_position)
+
+    def slider_released(self):
+        if self.playing_before_slider_move:
+            self.media_player.play()
+
+    def media_status_changed(self, status):
+        pass
+
+    def toggle_repeat(self):
+        self.repeat = not self.repeat
+        self.repeat_current_song = self.repeat  # Установка флага повтора текущей песни
+
+    def load_music_list(self):
+        try:
+            with open('music_list.pkl', 'rb') as file:
+                self.music_list = pickle.load(file)
+        except FileNotFoundError:
+            self.music_list = []
+
+    def save_music_list(self):
+        with open('music_list.pkl', 'wb') as file:
+            pickle.dump(self.music_list, file)
+
+    def update_musicname(self):
+        if self.current_song_index < len(self.music_list):
+            current_song_name = QUrl.fromLocalFile(self.music_list[self.current_song_index]).fileName()
+            self.ui.musicname.setText(current_song_name)
+
+if __name__ == "__main__":
+    app = QApplication([])
+    window = PlayerWindow()
+    window.show()
+    app.exec_()
